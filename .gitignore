@@ -1,0 +1,18 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.executed.ipynb
+
+# ---- IDE / 编辑器 ----
+.idea/
+.vscode/
+
+# ---- 运行产物（每次运行自动生成，不入库）----
+输出/
+*.log
+
+# ---- 系统文件 ----
+Thumbs.db
+desktop.ini
+.DS_Store
