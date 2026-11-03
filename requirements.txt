@@ -1,0 +1,15 @@
+# 运行环境：Windows 10/11 + Python 3.x（本项目在 conda 环境 pytorch_env 下开发）
+# 版本号取自 2026-11-03 实测通过的开发环境，仅供参考，可按需放宽。
+
+streamlit==1.50.0
+numpy==2.0.1
+pandas==2.3.3
+matplotlib==3.9.4
+scipy==1.13.1
+scikit-learn==1.6.1
+openpyxl==3.1.5
+
+# PyTorch：默认安装为 CPU 版本；
+# 如需 GPU 加速，请按 https://pytorch.org/get-started/locally/ 选择对应 CUDA 版本的安装命令，
+# 不要直接使用下面的固定版本号。
+torch==2.5.1

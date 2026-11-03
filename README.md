@@ -7,7 +7,7 @@
 ## 快速开始
 
 ```bash
-pip install -r requirements.txt   # 依赖清单（待补全）
+pip install -r requirements.txt
 python -m streamlit run app.py    # 启动图形界面
 # 或
 python rul_pipeline.py            # 命令行流程
