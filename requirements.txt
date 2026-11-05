@@ -8,6 +8,7 @@ matplotlib==3.9.4
 scipy==1.13.1
 scikit-learn==1.6.1
 openpyxl==3.1.5
+psutil==7.2.2   # resource_guard.py 读内存/CPU/线程数用
 
 # PyTorch：默认安装为 CPU 版本；
 # 如需 GPU 加速，请按 https://pytorch.org/get-started/locally/ 选择对应 CUDA 版本的安装命令，
