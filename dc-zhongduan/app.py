@@ -21,6 +21,13 @@ import nn_library as nl
 import resource_guard as rg
 import rul_pipeline as rp
 
+try:
+    import shell_patch as _shell_patch
+
+    _shell_patch.ensure()
+except Exception:
+    pass
+
 plt.rcParams["font.sans-serif"] = [
     "Microsoft YaHei", "SimHei",
     "Noto Sans CJK SC", "Noto Sans CJK JP",

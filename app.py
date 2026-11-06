@@ -37,6 +37,16 @@ import nn_library as nl
 import resource_guard as rg
 import rul_pipeline as rp
 
+# 云端（Streamlit Community Cloud）没有本机改过的 index.html 补丁：应用脚本首次运行时
+# 自己给当前环境的 streamlit/static/index.html 补一次（禁浏览器自动翻译 + React DOM 兜底
+# + 崩了显示蓝色提示）。幂等、失败不影响运行；补丁生效后刷新一次即永久安全。
+try:
+    import shell_patch as _shell_patch
+
+    _shell_patch.ensure()
+except Exception:
+    pass
+
 plt.rcParams["font.sans-serif"] = [
     "Microsoft YaHei", "SimHei",                 # Windows 本机
     "Noto Sans CJK SC", "Noto Sans CJK JP",      # Linux / Streamlit Cloud（packages.txt 装 fonts-noto-cjk）
