@@ -1,9 +1,8 @@
 [server]
-# 关闭文件监视：项目目录里有大量数据/输出文件，监视器会在写盘后触发重跑与扫描，
-# 在低配机器上会造成周期性卡顿。改代码后请手动重启终端（关闭旧窗口重开 启动终端.bat）。
 fileWatcherType = "none"
 runOnSave = false
-headless = false
+headless = true
+showEmailPrompt = false
 maxUploadSize = 500
 
 [browser]
