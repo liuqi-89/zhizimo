@@ -63,6 +63,17 @@ def wait(timeout: float = 60.0) -> bool:
     return STORE["model"] is not None
 
 
+def reset() -> None:
+    """丢弃已预热的模型（侧栏「刷新」/ 一键恢复时调用）。
+
+    刷新后界面回到初始状态，不该再留一个"看不见的模型"占着内存；下次 warm()
+    会重新起线程加载（后台，不阻塞首屏）。
+    """
+    with _LOCK:
+        STORE.update({"started": False, "done": False, "model": None,
+                      "info": None, "error": None, "t0": None, "t1": None})
+
+
 def elapsed() -> float | None:
     """预热耗时（秒，未完成返回 None）。"""
     if STORE.get("t0") is None or STORE.get("t1") is None:

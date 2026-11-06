@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -150,59 +151,153 @@ def delete_dataset(ds_id: str) -> bool:
 
 # ---------------------------------------------------------------- 历史增强
 def pooled_profile(current_cal: dict, ds_ids: list[str], taus: np.ndarray,
-                   include_current: bool = True, exclude_fp: Optional[str] = None) -> tuple[np.ndarray, int]:
+                   include_current: bool = True, exclude_fp: Optional[str] = None,
+                   current_i_ref: Optional[float] = None) -> tuple[np.ndarray, int]:
     """把当前 + 历史数据集的乘子样本合并，得到归一化分位曲线 prof。
 
-    * 等权合并：每个数据集先归一化到自己的中位数（抵消不同数据集的量纲差异），
-      再按数据集等权拼接 —— 数据集的"数量"决定权重，而不是样本条数。
-    * exclude_fp：跳过与当前数据指纹相同的历史档（避免自己重复计入）。
+    * 归一化：每个数据集先除自己的中位数（抵消不同数据集的量纲差异）。
+    * 工况加权（2026-11-06）：给 current_i_ref 时，按「历史档电流 / 当前电流」的
+      对数距离给权重 `exp(-(ln(I_d/I_cur)/0.7)^2)` —— 工况越接近权重越高，
+      相差约 2 倍以上权重 <0.15 直接跳过。这样概率层随工况走，不会把恒流
+      小电流档的经验硬套到大电流档上（反之亦然）。
+    * 护栏：先跳过「标定分布异常」的历史档（多文件误拼接等会产生近零的期望
+      降幅 x，使 d = 实际/期望 出现 ±100 量级）；合并后 clip 到 0.1–5 倍。
     * 返回 (prof, n_sets)。
     """
-    mats = []
+    i_cur = None
+    if current_i_ref is not None:
+        try:
+            _v = float(current_i_ref)
+            if np.isfinite(_v) and _v > 0:
+                i_cur = _v
+        except (TypeError, ValueError):
+            i_cur = None
+
+    mats: list[np.ndarray] = []
+    weights: list[float] = []
     if include_current:
         mats.append(np.asarray(current_cal["d"], float) / max(np.median(current_cal["d"]), 1e-6))
+        weights.append(1.0)
     for ds in ds_ids:
         meta = load_meta(ds) or {}
         if exclude_fp and meta.get("fingerprint") == exclude_fp:
             continue
+        try:
+            _p5 = abs(float(meta.get("d_p5") or 0.0))
+            _p95 = abs(float(meta.get("d_p95") or 0.0))
+            _dmean = abs(float(meta.get("d_mean") or 0.0))
+        except (TypeError, ValueError):
+            _p5 = _p95 = _dmean = 0.0
+        if _p5 > 20.0 or _p95 > 20.0 or _dmean > 8.0:
+            continue
+        # 工况权重：历史档电流（I_ref）与当前电流的对数距离
+        _w = 1.0
+        if i_cur is not None:
+            try:
+                _i_d = float(meta.get("I_ref") or 0.0)
+            except (TypeError, ValueError):
+                _i_d = 0.0
+            if _i_d > 0:
+                _lr = math.log(_i_d / i_cur)
+                _w = float(math.exp(-(_lr / 0.7) ** 2))
+                if _w < 0.15:
+                    continue
+            else:
+                _w = 0.4   # 历史档没有电流信息：保守地给个小权重
         d = load_d(ds)
         if d is None or len(d) < 10:
             continue
         mats.append(d / max(float(np.median(d)), 1e-6))
+        weights.append(_w)
     if not mats:
         return np.asarray(current_cal["prof"], float), int(include_current)
 
-    # 数据集等权：每个集合按自身样本数重复到统一长度（采样而非原样拼接）
+    # 按权重分配采样条数（仍须保证每个候选集至少 50 条，避免小集被权重抹掉）
     rng = np.random.default_rng(2024)
-    target = 4000
+    total = 4000 * len(mats)
+    wsum = float(np.sum(weights)) or 1.0
     pooled = []
-    for m in mats:
+    for m, w in zip(mats, weights):
         m = np.asarray(m, float)
-        idx = rng.integers(0, len(m), size=target)
+        if m.size == 0:
+            continue
+        n_i = max(50, int(round(total * float(w) / wsum)))
+        idx = rng.integers(0, len(m), size=n_i)
         pooled.append(m[idx])
+    if not pooled:
+        return np.asarray(current_cal["prof"], float), int(include_current)
     pool = np.concatenate(pooled)
     prof = np.quantile(pool, taus)
     prof = prof / max(prof[np.argmin(np.abs(taus - 0.5))], 1e-6)
+    # 物理护栏：乘子=实际降幅/期望降幅，长期>5 倍或<0.1 倍都不代表真实退化
+    prof = np.clip(prof, 0.1, 5.0)
     return prof, len(mats)
 
 
-def trend_prior(ds_ids: list[str]) -> Optional[dict]:
-    """历史数据的衰减律经验先验（a/b/c 中位数）。"""
-    rows = []
-    for ds in ds_ids:
-        for m in list_datasets():
-            if m.get("id") == ds:
-                rows.append(m)
-    if not rows:
-        return None
-    a = float(np.median([r["g"]["a"] for r in rows]))
-    b = float(np.median([r["g"]["b"] for r in rows]))
-    c = float(np.median([r["g"]["c"] for r in rows]))
-    return dict(a=a, b=b, c=c, n=len(rows))
+def _family_key(name: str) -> str:
+    """把数据集归到「家族」：同一批实验只变工况时，名字前缀相同（如“1000h 恒流耐久·I=9.48A”）。"""
+    s = str(name or "").strip()
+    for sep in ("·", "|", "-", "_"):
+        if sep in s:
+            s = s.split(sep)[0]
+            break
+    return s.strip()[:24]
 
+
+def condition_sensitivity() -> dict:
+    """从历史记忆库里找「同一数据家族、不同电流」的档，拟合电流敏感度 α。
+
+    为什么必须按家族分组：不同电芯/不同老化台的 g0 绝对水平本来就不一样
+    （单片高频衰减 0.7 mV/h vs 长寿命台架 0.05 mV/h），跨家族混在一起拟合会
+    得到负指数；同一家族内只变电流，才谈得上「电流 → 衰减速度」的敏感度。
+
+    返回：ok=True 时给 alpha / r2 / n / i_min / i_max / family；否则只给家族概况。
+    """
+    fams: dict[str, list[tuple[float, float]]] = {}
+    for r in list_datasets():
+        try:
+            i_ref = float(r.get("I_ref") or 0.0)
+            g0 = float(r.get("g0_mVh") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not bool(r.get("has_I")) or i_ref <= 1.0 or g0 <= 1e-9 or g0 >= 1e3:
+            continue
+        fams.setdefault(_family_key(r.get("name")), []).append((i_ref, g0))
+
+    best: tuple[str, list[tuple[float, float]], float] | None = None
+    for fam, pts in fams.items():
+        if len(pts) < 3:
+            continue
+        _i = [p[0] for p in pts]
+        spread = max(_i) / max(min(_i), 1e-9)
+        if best is None or (len(pts), spread) > (len(best[1]), best[2]):
+            best = (fam, pts, spread)
+    _fam_counts = {k: len(v) for k, v in fams.items()}
+    if best is None:
+        return dict(ok=False, n=0, family=None, families=_fam_counts)
+
+    fam, pts, _spread = best
+    x = np.log(np.asarray([p[0] for p in pts], float))
+    y = np.log(np.asarray([p[1] for p in pts], float))
+    try:
+        alpha, b = np.polyfit(x, y, 1)
+        pred = alpha * x + b
+        ss_res = float(np.sum((y - pred) ** 2))
+        ss_tot = float(np.sum((y - y.mean()) ** 2))
+        r2 = 1.0 - ss_res / max(ss_tot, 1e-12)
+    except Exception:  # noqa: BLE001 - 拟合失败只表示"没有结论"
+        return dict(ok=False, n=len(pts), family=fam, pts=pts, families=_fam_counts)
+    return dict(ok=True, n=len(pts), alpha=float(alpha), r2=float(r2), family=fam,
+                i_min=min(p[0] for p in pts), i_max=max(p[0] for p in pts), pts=pts,
+                families=_fam_counts)
 
 def quality_check(prep: dict) -> list[str]:
-    """数据质量体检，返回问题列表（空 = 正常）。"""
+    """数据质量体检，返回问题列表（空 = 正常）。
+
+    电压判据按量级自适应：单片（中位电压 < 2 V）用 0.1-1.5 V，电堆用
+    2.0-4.2 V——否则单片恒流实验（0.74 V 的 1000 h 数据）会被误报为
+    「电压范围异常，请核对单位」。
+    """
     msgs = []
     if prep["n_rows"] < 2000:
         msgs.append(f"数据点偏少（{prep['n_rows']} 行），概率层可能不稳定")
@@ -212,8 +307,11 @@ def quality_check(prep: dict) -> list[str]:
         if float(gaps.max()) > 1.0:
             msgs.append(f"存在 >1 h 的数据空档（最大 {gaps.max():.1f} h），已线性插值")
     u = np.asarray(prep["u_s"], float)
-    if float(u.min()) < 2.0 or float(u.max()) > 4.2:
-        msgs.append(f"电压范围异常（{u.min():.3f}–{u.max():.3f} V），请核对单位")
+    u_med = float(np.nanmedian(u)) if np.isfinite(u).any() else float("nan")
+    lo, hi = (0.1, 1.5) if (np.isfinite(u_med) and u_med < 2.0) else (2.0, 4.2)
+    if float(np.nanmin(u)) < lo or float(np.nanmax(u)) > hi:
+        msgs.append(f"电压范围异常（{np.nanmin(u):.3f}-{np.nanmax(u):.3f} V），"
+                    f"请核对单位（单片判定阈值 0.1-1.5 V、电堆 2.0-4.2 V）")
     drop_pct = 100.0 * (1.0 - prep["u_anchor"] / max(prep["u_start"], 1e-9))
     if drop_pct < 0:
         msgs.append("末端电压高于起始电压（数据可能未按时间排序或整体在恢复）")

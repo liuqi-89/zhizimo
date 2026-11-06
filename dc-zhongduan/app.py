@@ -64,6 +64,19 @@ _PANEL_CSS = """
 /* 侧栏的收起/展开按钮常显（默认只在鼠标移到侧栏上时才出现） */
 [data-testid="stSidebarCollapseButton"]{opacity:1 !important;}
 [data-testid="stSidebarCollapsedControl"]{opacity:1 !important;}
+/* 上传区的「Browse files」按钮改成红色：这是评委会第一个点的按钮，要醒目 */
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stFileUploader"] button[data-testid="stBaseButton-secondary"]{
+  background-color:#e5484d !important; border:1px solid #d93a3f !important;
+  color:#ffffff !important; font-weight:700 !important;
+  box-shadow:0 2px 10px rgba(229,72,77,.28) !important;
+}
+[data-testid="stFileUploaderDropzone"] button:hover,
+[data-testid="stFileUploader"] button[data-testid="stBaseButton-secondary"]:hover{
+  background-color:#f0595e !important; border-color:#e5484d !important; color:#fff !important;
+}
+[data-testid="stFileUploaderDropzone"] button p,
+[data-testid="stFileUploaderDropzone"] button span{color:#ffffff !important;}
 </style>
 """
 st.markdown(_PANEL_CSS, unsafe_allow_html=True)
@@ -185,6 +198,42 @@ def _png(fig: plt.Figure, dpi: int = 110) -> bytes:
 def _parse_blob(blob: bytes):
     return rp.read_any(blob)
 
+def _friendly_err(ex: BaseException) -> str:
+    raw = str(ex).strip()
+    low = raw.lower()
+    if isinstance(ex, UnicodeDecodeError) or "codec" in low or "decode" in low or "utf-8" in low:
+        return ("文件编码无法识别（可能是不支持的编码或二进制文件）。"
+                "请用 Excel 打开后「另存为 CSV UTF-8」，或直接上传 .xlsx。")
+    if "empty" in low or "no columns" in low or "tokenizing" in low or "0 rows" in low:
+        return "文件里没有可读的表格内容（空文件或只有表头）。请确认上传的是完整的数据文件。"
+    if "excel" in low and "openpyxl" in low:
+        return "当前环境缺少 Excel 解析组件（openpyxl），请改传 CSV/TSV。"
+    if "至少 200 行" in raw or "有效数据太短" in raw:
+        return raw + "（数据点太少，无法做衰减律与概率分析）。"
+    if "时间跨度不足" in raw or "数据太短" in raw or "标定窗口" in raw:
+        return raw + "（当前版本要求至少约 50 h 的完整老化曲线；更短的数据只能做原始数据预览）。"
+    if "无法解析成表格" in raw or "数值列不足" in raw or "没找到" in raw:
+        return raw
+    if raw and not any("\u4e00" <= ch <= "\u9fff" for ch in raw):
+        return ("文件格式无法识别（缺少时间列或电压列）。请上传含「时间 / 电压」两列的 CSV/TSV/Excel，"
+                f"或展开「🔧 列名识别不对？手动指定」自行指定。原始错误：{raw[:160]}")
+    return raw or "未知错误。"
+
+def _reset_session() -> None:
+    try:
+        mw.reset()
+    except Exception:
+        pass
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    for _k in list(st.session_state.keys()):
+        try:
+            del st.session_state[_k]
+        except Exception:
+            pass
+
 @st.cache_data(show_spinner=False, max_entries=8)
 def _load_demo(blob: bytes, time_unit: str = "auto"):
     return rp.load_csv(blob, time_unit=time_unit)
@@ -218,8 +267,10 @@ def _fig_prediction(prep, g, mc, ft: float, uth: float) -> plt.Figure:
     ax.text(t0, u0, " 预测起点", color="#7f8c8d", fontsize=9, va="bottom")
 
     valid = rr[np.isfinite(rr)]
+    right = max(t0 + (float(np.percentile(valid, 95)) * 1.35 + 100.0) if len(valid) else t0 + 500.0,
+                t0 + 300.0)
+    right = min(right, t_ext[-1])
     if len(valid) > 0:
-        p50 = float(np.percentile(valid, 50))
 
         _idx = np.where(det <= uth)[0]
         _xc = None
@@ -230,18 +281,15 @@ def _fig_prediction(prep, g, mc, ft: float, uth: float) -> plt.Figure:
             else:
                 _up, _un = float(det[_i - 1]), float(det[_i])
                 _xc = float((_i - 1 + (_up - uth) / max(_up - _un, 1e-12)) * rp.WIN_H)
-        if _xc is None:
-            _xc = p50
-        ax.axvline(t0 + _xc, color="#c0392b", lw=1.2, ls="--", alpha=0.85)
+        if _xc is not None and (t0 + _xc) <= right:
+            ax.axvline(t0 + _xc, color="#c0392b", lw=1.2, ls="--", alpha=0.85)
 
-        ax.annotate(f"P50 穿越 ≈ {_xc:.0f} h", xy=(t0 + _xc, uth), xytext=(9, -17),
-                    textcoords="offset points", color="#c0392b", fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.75))
+            ax.annotate(f"P50 穿越 ≈ {_xc:.0f} h", xy=(t0 + _xc, uth), xytext=(9, -17),
+                        textcoords="offset points", color="#c0392b", fontsize=9,
+                        bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.75))
 
-    right = max(t0 + (float(np.percentile(valid, 95)) * 1.35 + 100.0) if len(valid) else t0 + 500.0,
-                t0 + 300.0)
-    ax.set_xlim(lo, min(right, t_ext[-1]))
-    seg = (t_ext >= lo) & (t_ext <= min(right, t_ext[-1]))
+    ax.set_xlim(lo, right)
+    seg = (t_ext >= lo) & (t_ext <= right)
     ys = np.concatenate([u[m], det[seg], [uth]])
     pad = max(0.01, 0.06 * (ys.max() - ys.min()))
     ax.set_ylim(ys.min() - pad, ys.max() + pad)
@@ -301,19 +349,30 @@ def run_analysis(df: pd.DataFrame, name: str, use_history: bool, hist_ids: list[
     g = rp.fit_decay(prep)
     cal = rp.calibrate(prep, g)
     fp = dm.fingerprint(prep["n_rows"], prep["t_end"])
-    prof, n_sets = (dm.pooled_profile(cal, hist_ids, rp.TAUS, exclude_fp=fp) if use_history
+
+    _i_cur = prep.get("I_ref") if prep.get("has_I") else None
+    prof, n_sets = (dm.pooled_profile(cal, hist_ids, rp.TAUS, exclude_fp=fp,
+                                      current_i_ref=_i_cur) if use_history
                     else (np.asarray(cal["prof"], float), 1))
     cal_use = dict(cal, prof=prof)
+    cond = rp.condition_profile(prep)
     mc = rp.run_monte_carlo(prep, g, cal_use)
     _m = _get_model()
     st.session_state["model_loaded"] = _m is not None
     ai = rp.one_step_selfcheck(_m, prep) if _m is not None else None
     quality = dm.quality_check(prep)
-    ds_id = dm.save_dataset(name, prep, g, cal, extra=dict(quality="; ".join(quality)))
+
+    _bad_cal = abs(float(cal["d_p95"])) > 20.0 or abs(float(cal["d_p5"])) > 20.0
+    if _bad_cal:
+        quality = quality + ["标定乘子分布异常（d_p5=%.1f, d_p95=%.1f）：本档未写入历史记忆库，避免污染概率池"
+                             % (float(cal["d_p5"]), float(cal["d_p95"]))]
+        ds_id = None
+    else:
+        ds_id = dm.save_dataset(name, prep, g, cal, extra=dict(quality="; ".join(quality)))
 
     nn = nl.archive(name, prep, extra=dict(quality="; ".join(quality), source="终端预测"))
     return dict(ok=True, name=name, prep=prep, g=g, cal=cal, cal_use=cal_use,
-                mc=mc, ai=ai, quality=quality, ds_id=ds_id, nn=nn,
+                mc=mc, ai=ai, quality=quality, ds_id=ds_id, nn=nn, cond=cond,
                 n_history=n_sets, use_history=use_history, fp=fp)
 
 def _save_outputs(png1: bytes, png2: bytes, res, ft, uth, rr) -> Path:
@@ -360,6 +419,11 @@ _overlay_slot = st.empty()
 
 with st.sidebar:
     st.header("⚙️ 设置")
+    if st.button("🔄 刷新（回到初始界面）", key="dsh_refresh", width="stretch",
+                 help="一键回到初始界面：清空本次会话的上传文件、预测结果、画布缓存与历史选择"
+                      "（磁盘上的数据记忆库/神经网络库/输出目录不受影响）"):
+        _reset_session()
+        st.rerun()
     src = st.radio("数据来源", ["上传数据", "内置演示数据"], horizontal=True,
                    help="默认不加载任何数据；内置演示数据会占用数十 MB 内存，按需再选。")
 
@@ -384,7 +448,7 @@ with st.sidebar:
                 try:
                     df_input = _load_demo(blob, _tu)
                 except Exception as ex:
-                    parse_err = f"演示数据读取失败：{ex}"
+                    parse_err = f"演示数据读取失败：{_friendly_err(ex)}"
                 finally:
                     _clear_loading(_overlay_slot)
     else:
@@ -418,7 +482,7 @@ with st.sidebar:
                            f"{float(df_input['Time (h)'].iloc[-1]):.1f} h"
                            f"（仅适用于同一块电池的分段文件）")
             except Exception as ex:
-                parse_err = str(ex)
+                parse_err = _friendly_err(ex)
             finally:
                 _clear_loading(_overlay_slot)
         elif blobs_all:
@@ -484,7 +548,7 @@ with st.sidebar:
                 st.session_state["map_sig"] = "|".join(f"{k}={v}" for k, v in sorted(map_use.items()))
                 df_input = rp.make_canonical(raw_df, map_use, time_unit=_tu)
             except Exception as ex:
-                parse_err = str(ex)
+                parse_err = _friendly_err(ex)
             finally:
                 _clear_loading(_overlay_slot)
         else:
@@ -577,7 +641,7 @@ with st.sidebar:
 
         st.caption("点一下按钮，右侧浮出对应面板（盖在页面之上，不挤占布局）；再点一次即关闭。")
         _other_sel = st.segmented_control(
-            "其余数据面板", ["📋 概览", "📐 衰减律", "📊 阈值表"],
+            "其余数据面板", ["📋 概览", "📐 衰减律", "📊 阈值表", "🧭 工况"],
             default=None, key="other_panel_sel", label_visibility="collapsed",
             width="stretch")
     with st.expander("🌡️ 泛化数据（不确定性扇形带）", expanded=False):
@@ -620,9 +684,9 @@ with _hero_r:
     with st.popover("👥 制作组简介", width="stretch"):
         st.markdown("### 制作组简介")
 
-        st.markdown("牛逼轰轰的mj，hyg，zqy，js",
+        st.markdown("毛炯 黄胤淦 蒋帅 朱其言",
                     unsafe_allow_html=True)
-        st.caption("美军很勇敢，在企业健身")
+        st.caption("西双banana毒麻蛇")
 
     _res_label = st.selectbox(
         "画布分辨率",
@@ -686,9 +750,18 @@ if go and df_input is not None:
                 st.session_state.pop(_k, None)
         except Exception as ex:
             log_exc("点击预测", ex)
-            st.error(f"分析失败：{ex}")
+            _nerr = int(st.session_state.get("__err_n", 0) or 0) + 1
+            st.session_state["__err_n"] = _nerr
+            st.error(f"分析失败：{_friendly_err(ex)}")
             with st.expander("查看错误详情（已写入 终端诊断.log）", expanded=False):
                 st.code("见 终端诊断.log")
+
+            if _nerr >= 2:
+                st.warning(f"本次会话已连续失败 {_nerr} 次。建议一键刷新回到初始界面再试，"
+                           f"不要在同一份坏数据上反复点。", icon="🧹")
+            if st.button("🔄 一键刷新（清空会话，回到初始界面）", key="dsh_refresh_err"):
+                _reset_session()
+                st.rerun()
         finally:
 
             rg.release_hold(_overlay_slot, "分析完成，正在释放资源",
@@ -885,6 +958,45 @@ if _other_sel:
             if res["ai"]:
                 st.caption(f"AI 一步自检：RMSE={res['ai']['rmse_uV']:.1f} µV/步"
                            f"（增量 σ≈{res['ai']['sig_uV']:.1f} µV）")
+
+        elif _other_sel == "🧭 工况":
+            _cond = res.get("cond") or {}
+            _sens = dm.condition_sensitivity()
+            st.markdown("**运行工况档案**")
+            if _cond.get("has_I"):
+                st.markdown(
+                    f"**{_cond['label']}**  \n"
+                    f"电流中位数 **{_cond['i_med']:.2f} A**"
+                    f"（范围 {_cond['i_min']:.2f} – {_cond['i_max']:.2f} A）  \n"
+                    f"四分位变异系数 IQR/中位数 = **{_cond['i_cv']:.3f}**  \n"
+                    f"阈值判据：电流可用 → 按 I_ref 折算寿命阈值")
+                if float(_cond["i_cv"]) >= 0.25:
+                    st.warning("检测到**变工况/负载波动**：RUL 以「中位电流等效恒流」折算，"
+                               "负载波动越大，区间可信度越低。若能把数据按恒流段拆开、"
+                               "每段单独分析，结论会稳得多（拼接模式只适合同一块电池的连续分段）。",
+                               icon="🧭")
+            else:
+                st.caption(f"{_cond.get('label', '无电流列')}：阈值直接按电压算。")
+
+            st.markdown("**电流 → 衰减速度 敏感度**")
+            if _sens.get("ok"):
+                st.markdown(
+                    f"幂律拟合 **g₀ ∝ I^α**：α = **{_sens['alpha']:.2f}**"
+                    f"（R² = {_sens['r2']:.2f}）  \n"
+                    f"来源：「{_sens['family']}」家族的 {_sens['n']} 档，"
+                    f"电流 {_sens['i_min']:.1f} – {_sens['i_max']:.1f} A  \n"
+                    f"含义：电流翻倍，初始衰减速度约变 **{2 ** _sens['alpha']:.2f} 倍**")
+                _i_cur = _cond.get("i_med")
+                if _i_cur and (_i_cur < _sens["i_min"] * 0.8 or _i_cur > _sens["i_max"] * 1.25):
+                    st.info(f"当前电流 {_i_cur:.1f} A 不在已标定区间内：概率层会按对数距离"
+                            f"自动降低远工况档的权重，RUL 区间偏宽属正常；"
+                            f"把它当「外推」而不是实测结论。", icon="🧭")
+            else:
+                st.caption(f"有电流信息的历史档不足（同家族 ≥3 档才能拟合 α，"
+                           f"当前 {_sens.get('n', 0)} 档），暂不给出。")
+            st.caption("概率层合并不是简单平均：每档历史按「电流对数距离」加权"
+                       "（exp(−(ln(I_d/I_cur)/0.7)²)），所以同一份数据在不同工况下"
+                       "会得到不同的 RUL 区间——这就是模型对环境特征值的敏感度。")
 
         else:
             st.markdown("**全阈值表**（预设 3.5–6.0%）")

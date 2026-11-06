@@ -517,7 +517,9 @@ function drawDynamic(k) {
      两者口径不同时（历史增强把乘子分布拉宽后差得很多），交点会跑到曲线外面。
      取不到交点（该档在视界内穿不过阈值）才退回统计 P50。 */
   var xm = (DATA.cross && DATA.cross.length > k) ? DATA.cross[k] : null;
-  if (xm === null || xm === undefined || !isFinite(xm)) { xm = p50; }
+  if (xm === null || xm === undefined || !isFinite(xm)) { xm = null; }
+  /* 2026-11-06（无为而治）：交点在视界外/不存在时，干脆不画竖线——不再退回统计 P50，
+     否则会出现「横线与曲线的交点在图外、竖线却画在图内」的自相矛盾。 */
   if (uth >= DATA.y_lo && uth <= DATA.y_hi) {
     ctx.strokeStyle = COL.red; ctx.lineWidth = 2.4; ctx.setLineDash([8, 5]);
     ctx.beginPath(); ctx.moveTo(ML, ty(uth)); ctx.lineTo(W - MR, ty(uth)); ctx.stroke();
@@ -526,7 +528,7 @@ function drawDynamic(k) {
     ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
     ctx.fillText('FT = ' + fmt(ft, 1) + '%   阈值 ' + fmt(uth, 4) + ' V', W - MR - 6, ty(uth) - 6);
   }
-  if (xm === xm && isFinite(xm)) {
+  if (xm !== null) {
     var xp = DATA.t0 + xm;
     if (xp >= DATA.x_lo && xp <= DATA.x_hi) {
       ctx.strokeStyle = COL.red; ctx.lineWidth = 1.6; ctx.setLineDash([4, 4]);
@@ -537,6 +539,8 @@ function drawDynamic(k) {
       ctx.fillText('P50 穿越 ≈ ' + fmt(xm, 0) + ' h', tx(xp) + 5, PRED_H - MB - 6);
     }
   }
+  VLINE.shown = !!(xm !== null && (DATA.t0 + xm) >= DATA.x_lo && (DATA.t0 + xm) <= DATA.x_hi);
+  VLINE.x = xm;
   ftv.textContent = fmt(ft, 1) + '%';
   stat.textContent = '当前 FT = ' + fmt(ft, 1) + '%   阈值 ' + fmt(uth, 4) + ' V   ｜   '
       + 'P5 ' + fmt(DATA.p5[k], 0) + ' h · P50 ' + fmt(DATA.p50[k], 0) + ' h · P95 '
@@ -884,6 +888,7 @@ function _readyPctText() {
    - 全部动作都在 rAF 里合帧，快速拖动也最多每帧一次。 */
 var histTimer = 0, histQueued = 0, povlT = 0, evTimes = [];
 var PREVIEW_K = -1;                     /* 画布上目前贴的是哪一档缩略图（-1=全分辨率或无） */
+var VLINE = { shown: false, x: null };  /* 图1 竖线（P50 穿越）是否真的画出来了，供验收脚本读取 */
 
 /* ---------- 红线矩阵监视器（浏览器侧）----------
    和服务器侧 resource_guard 的"红线矩阵"同构：每帧记录"绘制耗时 / 帧间隔 / JS 堆增长"，
@@ -1336,6 +1341,7 @@ function init() {
       reveal: function () { _reveal(0); },
       histK: function () { return HIST_DRAWN_K; },
       prevK: function () { return PREVIEW_K; },
+      vline: function () { return { shown: VLINE.shown, x: VLINE.x }; },
       sig: function () { return _canvasSig(ch); },
       probe: function (k) { rng.value = k; drawDynamic(k); drawHist(k); return _histTip(k); }
     };

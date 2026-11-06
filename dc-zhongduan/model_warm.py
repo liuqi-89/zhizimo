@@ -43,6 +43,11 @@ def wait(timeout: float = 60.0) -> bool:
         time.sleep(0.1)
     return STORE["model"] is not None
 
+def reset() -> None:
+    with _LOCK:
+        STORE.update({"started": False, "done": False, "model": None,
+                      "info": None, "error": None, "t0": None, "t1": None})
+
 def elapsed() -> float | None:
     if STORE.get("t0") is None or STORE.get("t1") is None:
         return None

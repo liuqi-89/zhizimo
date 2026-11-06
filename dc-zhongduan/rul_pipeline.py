@@ -14,6 +14,7 @@ SMOOTH_WIN_STEPS = 1001
 TREND_WIN_STEPS = 15001
 SEG_H = 50.0
 SEG_STEPS = 5000
+MIN_SEG_STEPS = 500
 N_EDGE = 10
 P_INIT_H = 10.0
 
@@ -437,14 +438,20 @@ def prepare(df: pd.DataFrame) -> dict:
         raise ValueError("数据时间跨度不足（< 50 h），无法做衰减律拟合。")
     u_raw_i = np.interp(grid, t_raw, u_raw)
     I_i = np.interp(grid, t_raw, _col(df, "I (A)", np.nan) if "I (A)" in df.columns else np.full(len(df), np.nan))
-    has_I = "I (A)" in df.columns and np.isfinite(I_i).all() and np.nanstd(I_i) >= 0 and np.nanmean(I_i) > 1.0
+    _i_mean = float(np.nanmean(I_i)) if np.isfinite(I_i).any() else 0.0
+    _i_cv = float(np.nanstd(I_i) / _i_mean) if _i_mean > 1e-9 else 1.0
+
+    has_I = ("I (A)" in df.columns and np.isfinite(I_i).all()
+             and np.nanmean(I_i) > 1.0 and _i_cv < 0.20)
     if not has_I:
         I_i = np.full_like(grid, np.nan)
 
-    u_s = _rolling_mean(u_raw_i, SMOOTH_WIN_STEPS, 1)
-    u_trend = _rolling_mean(u_s, TREND_WIN_STEPS, max(1, TREND_WIN_STEPS // 3))
-    T_s = _rolling_mean(np.interp(grid, t_raw, _col(df, "TinAIR (°C)", np.nan)) if "TinAIR (°C)" in df.columns else np.full(len(grid), np.nan), SMOOTH_WIN_STEPS, 1)
-    RH_s = _rolling_mean(np.interp(grid, t_raw, _col(df, "HrAIRFC (%)", np.nan)) if "HrAIRFC (%)" in df.columns else np.full(len(grid), np.nan), SMOOTH_WIN_STEPS, 1)
+    _ws = SMOOTH_WIN_STEPS if len(grid) >= 4 * SMOOTH_WIN_STEPS else max(101, len(grid) // 8)
+    _wt = TREND_WIN_STEPS if len(grid) >= 4 * TREND_WIN_STEPS else max(101, len(grid) // 3)
+    u_s = _rolling_mean(u_raw_i, _ws, 1)
+    u_trend = _rolling_mean(u_s, _wt, max(1, _wt // 3))
+    T_s = _rolling_mean(np.interp(grid, t_raw, _col(df, "TinAIR (°C)", np.nan)) if "TinAIR (°C)" in df.columns else np.full(len(grid), np.nan), _ws, 1)
+    RH_s = _rolling_mean(np.interp(grid, t_raw, _col(df, "HrAIRFC (%)", np.nan)) if "HrAIRFC (%)" in df.columns else np.full(len(grid), np.nan), _ws, 1)
 
     n_init = max(1, int(round(P_INIT_H / DT)))
     n_last = max(1, min(1000, len(grid)))
@@ -464,14 +471,20 @@ def prepare(df: pd.DataFrame) -> dict:
         uths=uths, n_rows=len(df), t_span=float(t_raw[-1]), u_start=float(u_s[0]),
     )
 
+def _seg_steps(n_steps: int) -> int:
+    if n_steps >= 4 * SEG_STEPS:
+        return SEG_STEPS
+    return max(MIN_SEG_STEPS, n_steps // 4)
+
 def segment_rates(prep: dict) -> pd.DataFrame:
     u, t = prep["u_trend"], prep["t"]
-    n_seg = len(u) // SEG_STEPS
+    steps = _seg_steps(len(u))
+    n_seg = len(u) // steps
     rows = []
     for k in range(n_seg):
-        i0, i1 = k * SEG_STEPS, (k + 1) * SEG_STEPS - 1
+        i0, i1 = k * steps, (k + 1) * steps - 1
         drop = float(u[i0:i0 + N_EDGE].mean() - u[i1 - N_EDGE + 1:i1 + 1].mean())
-        dur = SEG_STEPS * DT
+        dur = steps * DT
         rows.append((k, t[i0], t[i1], 0.5 * (t[i0] + t[i1]), drop, drop / dur))
     return pd.DataFrame(rows, columns=["k", "t0", "t1", "t_mid", "drop", "rate"])
 
@@ -516,7 +529,7 @@ def fit_decay(prep: dict) -> dict:
     from scipy.optimize import least_squares
     sd = segment_rates(prep)
     if len(sd) < 4:
-        raise ValueError("数据太短：至少需要 4 个 50h 分段（约 200 h 历史）才能拟合衰减律。")
+        raise ValueError("数据太短：至少需要 4 个分段（约 50 h 以上的历史）才能拟合衰减律。")
     tt = sd["t_mid"].to_numpy(float)
     rr = sd["rate"].to_numpy(float)
     t0 = prep["t_end"]
@@ -584,13 +597,24 @@ def g_eval(g: dict, tau) -> np.ndarray:
     tau = np.asarray(tau, float)
     return g["a"] * np.exp(-g["b"] * tau) + g["c"]
 
+def _calib_windows(n_steps: int, t_span: float) -> tuple[int, int]:
+    win_steps = int(round(WIN_H / DT))
+    stride_steps = int(round(STRIDE_H / DT))
+    if (n_steps - win_steps - 2) // stride_steps >= 20:
+        return win_steps, stride_steps
+    stride_h = max(0.5, min(STRIDE_H, t_span / 40.0))
+    stride_steps = max(1, int(round(stride_h / DT)))
+    if (n_steps - win_steps - 2) // stride_steps < 20:
+        win_h = max(2.0, min(WIN_H, t_span / 6.0))
+        win_steps = max(50, int(round(win_h / DT)))
+    return win_steps, stride_steps
+
 def calibrate(prep: dict, g: dict) -> dict:
     from sklearn.linear_model import QuantileRegressor
     t, u_trend, t0 = prep["t"], prep["u_trend"], prep["t_end"]
-    win_steps = int(round(WIN_H / DT))
-    stride_steps = int(round(STRIDE_H / DT))
+    win_steps, stride_steps = _calib_windows(len(u_trend), float(prep.get("t_span", 0.0) or 0.0))
     starts = np.arange(0, max(1, len(u_trend) - win_steps - 2), stride_steps)
-    x = g_eval(g, t[starts] + WIN_H / 2.0) * WIN_H * 1e3
+    x = g_eval(g, t[starts] + win_steps * DT / 2.0) * win_steps * DT * 1e3
     y = (u_trend[starts] - u_trend[starts + win_steps]) * 1e3
     d = y / x
 
@@ -631,7 +655,7 @@ def run_monte_carlo(prep: dict, g: dict, cal: dict,
     for k in range(1, n_steps):
         z = rho * z + math.sqrt(1.0 - rho ** 2) * rng.standard_normal(n_mc)
         q = np.clip(norm.cdf(z), Q_CLIP[0], Q_CLIP[1])
-        mult = np.interp(q, ta, prof)
+        mult = np.clip(np.interp(q, ta, prof), 0.05, 5.0)
         U[:, k] = U[:, k - 1] - xk[k - 1] * mult / 1e3
 
     uths = prep["uths"]
@@ -888,3 +912,24 @@ def fmt_h(v) -> str:
     if v <= 0.5:
         return "0 h（已失效）"
     return f"{v:.0f} h"
+
+def condition_profile(prep: dict) -> dict:
+    if not prep.get("has_I"):
+        return dict(has_I=False, i_med=None, i_min=None, i_max=None, i_cv=None,
+                    label="无电流列（用电压阈值判据）")
+    I = np.asarray(prep.get("I_s"), float)
+    I = I[np.isfinite(I)]
+    if I.size == 0:
+        return dict(has_I=False, i_med=None, i_min=None, i_max=None, i_cv=None,
+                    label="无有效电流值（用电压阈值判据）")
+    med = float(np.median(I))
+    q1, q3 = np.percentile(I, [25, 75])
+    cv = float((q3 - q1) / max(abs(med), 1e-9))
+    if cv < 0.02:
+        label = "恒流工况"
+    elif cv < 0.25:
+        label = "小幅波动工况"
+    else:
+        label = "变工况（负载波动较大）"
+    return dict(has_I=True, i_med=med, i_min=float(I.min()), i_max=float(I.max()),
+                i_cv=cv, label=label)
