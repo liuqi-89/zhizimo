@@ -1,5 +1,8 @@
-# 运行环境：Windows 10/11 + Python 3.x（本项目在 conda 环境 pytorch_env 下开发）
+# 运行环境：Windows 10/11 / Linux 通用（本项目在 conda 环境 pytorch_env 下开发）
 # 版本号取自 2026-11-03 实测通过的开发环境，仅供参考，可按需放宽。
+# 云部署（Streamlit Community Cloud）请用 dc-zhongduan/ 目录及其自带的 requirements.txt。
+
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 streamlit==1.50.0
 numpy==2.0.1
@@ -10,7 +13,7 @@ scikit-learn==1.6.1
 openpyxl==3.1.5
 psutil==7.2.2   # resource_guard.py 读内存/CPU/线程数用
 
-# PyTorch：默认安装为 CPU 版本；
+# PyTorch：显式安装 CPU 版轮子（体积小、无需显卡；Windows / Linux 均有 CPU 轮子）。
 # 如需 GPU 加速，请按 https://pytorch.org/get-started/locally/ 选择对应 CUDA 版本的安装命令，
 # 不要直接使用下面的固定版本号。
-torch==2.5.1
+torch==2.5.1+cpu

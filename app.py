@@ -37,7 +37,12 @@ import nn_library as nl
 import resource_guard as rg
 import rul_pipeline as rp
 
-plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+plt.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei", "SimHei",                 # Windows 本机
+    "Noto Sans CJK SC", "Noto Sans CJK JP",      # Linux / Streamlit Cloud（packages.txt 装 fonts-noto-cjk）
+    "WenQuanYi Zen Hei", "Droid Sans Fallback",  # 其它 Linux 中文字体
+    "DejaVu Sans",
+]
 plt.rcParams["axes.unicode_minus"] = False
 
 HERE = Path(__file__).resolve().parent
@@ -452,20 +457,23 @@ with st.sidebar:
     _tu = dict(rp.TIME_UNIT_CHOICES)[_tu_label]
 
     if src == "内置演示数据":
-        label = st.selectbox("选择演示数据", rp.DEMO_LABELS, index=0)
-        blob = rp.demo_blob(label)
-        data_name = label.split(" ·")[0] + "_" + label.split("(")[0].split("·")[-1].strip()
-        if blob is None:
-            parse_err = "演示数据文件不存在，请改用「上传数据」。"
+        if not rp.DEMO_LABELS:
+            parse_err = "当前环境未内置演示数据，请改用「上传数据」。"
         else:
-            _show_loading(_overlay_slot,
-                          f"正在读取演示数据（{len(blob) / 1048576:.1f} MB，请稍候）")
-            try:
-                df_input = _load_demo(blob, _tu)
-            except Exception as ex:  # noqa: BLE001
-                parse_err = f"演示数据读取失败：{ex}"
-            finally:
-                _clear_loading(_overlay_slot)
+            label = st.selectbox("选择演示数据", rp.DEMO_LABELS, index=0)
+            blob = rp.demo_blob(label)
+            data_name = label.split(" ·")[0] + "_" + label.split("(")[0].split("·")[-1].strip()
+            if blob is None:
+                parse_err = "演示数据文件不存在，请改用「上传数据」。"
+            else:
+                _show_loading(_overlay_slot,
+                              f"正在读取演示数据（{len(blob) / 1048576:.1f} MB，请稍候）")
+                try:
+                    df_input = _load_demo(blob, _tu)
+                except Exception as ex:  # noqa: BLE001
+                    parse_err = f"演示数据读取失败：{ex}"
+                finally:
+                    _clear_loading(_overlay_slot)
     else:
         ups = st.file_uploader(
             "上传电池老化数据（CSV / TSV / Excel，可多选）",

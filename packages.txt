@@ -1,0 +1,3 @@
+# Streamlit Community Cloud 的 apt 依赖（每次构建时安装）
+# 中文字体：matplotlib 导出图时若缺中文字体会显示方框（网页画布不受影响）
+fonts-noto-cjk

@@ -56,14 +56,39 @@ CROSS_WIN = WIN_H
 MODEL_CFG = dict(n_feat=10, hidden=64, n_layers=1, t_scale_h=1000.0,
                  time_gain=3.0, train_t_ref=None)
 
-# 演示数据候选路径（FC1 截断 912.85 h / FC2 完整 1020.54 h）
+# 演示数据候选路径：优先用随代码一起分发的 数据/ 目录（云端可用），
+# 其次回退到本机桌面的原始数据集（本地开发用）。两者都没有时该演示项自动隐藏。
+_HERE = pathlib.Path(__file__).resolve().parent
+DEMO_DIR = _HERE / "数据"
+_DESKTOP = r"C:\Users\YOGA\Desktop"
 DEMO_SETS = [
-    ("FC1 · 测试集.csv（0 → 912.85 h，可对比历史结果）", r"C:\Users\YOGA\Desktop\测试集.csv"),
-    ("FC2 · FC2.v1.csv（0 → 1020.54 h，衰减更强）", r"C:\Users\YOGA\Desktop\电池ai分析\FC2\FC2.v1.csv"),
-    ("FC1 · 完整记录 FC1.csv（0 → 1154.21 h）", r"C:\Users\YOGA\Desktop\电池ai分析\IEEE2014DataChallengeData\IEEE 2014 Data Challenge Data\FC1_Without_Ripples\FC1.csv"),
+    ("FC1 · 测试集.csv（0 → 912.85 h，可对比历史结果）",
+     [DEMO_DIR / "demo_fc1.csv", _DESKTOP + r"\测试集.csv"]),
+    ("FC2 · FC2.v1.csv（0 → 1020.54 h，衰减更强）",
+     [DEMO_DIR / "demo_fc2.csv", _DESKTOP + r"\电池ai分析\FC2\FC2.v1.csv"]),
+    ("FC1 · 完整记录 FC1.csv（0 → 1154.21 h）",
+     [DEMO_DIR / "demo_fc1_full.csv",
+      _DESKTOP + r"\电池ai分析\IEEE2014DataChallengeData\IEEE 2014 Data Challenge Data\FC1_Without_Ripples\FC1.csv"]),
 ]
-DEMO_LABELS = [name for name, _ in DEMO_SETS]
-DEMO_CANDIDATES = [path for _, path in DEMO_SETS]
+
+
+def _first_existing(paths):
+    for p in paths:
+        try:
+            if pathlib.Path(p).is_file():
+                return str(p)
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_demos():
+    avail = [(name, _first_existing(paths)) for name, paths in DEMO_SETS]
+    return ([(n, p) for n, p in avail if p], [n for n, p in avail if p])
+
+
+DEMO_AVAILABLE, DEMO_LABELS = _resolve_demos()
+DEMO_CANDIDATES = [p for _, p in DEMO_AVAILABLE]
 
 # 模型文件候选路径
 MODEL_CANDIDATES = [
@@ -768,9 +793,9 @@ def run_monte_carlo(prep: dict, g: dict, cal: dict,
 
 
 def demo_blob(label: str) -> Optional[bytes]:
-    """按侧边栏的演示数据标签读文件。"""
-    for name, path in DEMO_SETS:
-        if name == label:
+    """按侧边栏的演示数据标签读文件（找不到对应文件时返回 None）。"""
+    for name, path in DEMO_AVAILABLE:
+        if name == label and path:
             try:
                 with open(path, "rb") as f:
                     return f.read()

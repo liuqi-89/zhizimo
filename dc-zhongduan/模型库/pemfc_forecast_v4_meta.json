@@ -1,0 +1,28 @@
+{
+  "arch": "v4_gru_transformer",
+  "cfg": {
+    "n_feat": 10,
+    "hidden": 64,
+    "n_layers": 1,
+    "t_scale_h": 1000.0,
+    "nhead": 4,
+    "ff_mult": 2,
+    "dropout": 0.1
+  },
+  "val_rmse": 0.7223828597623917,
+  "best_epoch": 2,
+  "n_params": 63683,
+  "n_windows": 193206,
+  "datasets": [
+    "FC1 测试集",
+    "FC2.v1"
+  ],
+  "sig_by_dataset": {
+    "FC1 测试集": 5.089834644198636e-06,
+    "FC2.v1": 1.4526979648643722e-05
+  },
+  "seed": 42,
+  "seq": 50,
+  "trained_at": "2026-11-03 11:56:36",
+  "train_sec": 2944.588900566101
+}

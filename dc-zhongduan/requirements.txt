@@ -1,0 +1,14 @@
+# 云部署（Streamlit Community Cloud）用依赖清单
+# 说明：Linux 默认 pip 安装的 torch 会带上 CUDA 组件（约 2.4 GB），云端构建容易超时；
+#       这里显式指定 PyTorch 官方 CPU 轮子索引，安装量与内存都小很多。
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+streamlit==1.50.0
+numpy==2.0.1
+pandas==2.3.3
+matplotlib==3.9.4
+scipy==1.13.1
+scikit-learn==1.6.1
+openpyxl==3.1.5
+psutil==7.2.2
+torch==2.5.1+cpu
